@@ -5,11 +5,14 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 import os
 from pathlib import Path
+import json
+import secrets
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -18,6 +21,47 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+TEACHERS_FILE = Path(__file__).parent / "teachers.json"
+
+
+def load_teachers():
+    with TEACHERS_FILE.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    if isinstance(data, dict):
+        if isinstance(data.get("teachers"), list):
+            data = data["teachers"]
+        else:
+            data = [
+                {"username": username, "password": password}
+                for username, password in data.items()
+            ]
+
+    return {
+        teacher["username"]: teacher["password"]
+        for teacher in data
+    }
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+teacher_sessions = {}
+
+
+def get_logged_in_teacher(authorization: str = Header(default=None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Teacher login required")
+
+    token = authorization.removeprefix("Bearer ").strip()
+    username = teacher_sessions.get(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Teacher login required")
+
+    return username
 
 # In-memory activity database
 activities = {
@@ -88,9 +132,51 @@ def get_activities():
     return activities
 
 
+@app.post("/login")
+def login(
+    credentials: LoginRequest = None,
+    username: str = None,
+    password: str = None,
+):
+    if credentials:
+        username = credentials.username
+        password = credentials.password
+
+    teachers = load_teachers()
+    if not username or not password or teachers.get(username) != password:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    token = secrets.token_urlsafe(32)
+    teacher_sessions[token] = username
+    return {"token": token, "username": username}
+
+
+@app.post("/logout")
+def logout(authorization: str = Header(default=None)):
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        teacher_sessions.pop(token, None)
+    return {"message": "Logged out"}
+
+
+@app.get("/auth/status")
+def auth_status(authorization: str = Header(default=None)):
+    try:
+        username = get_logged_in_teacher(authorization)
+        return {"authenticated": True, "username": username}
+    except HTTPException:
+        return {"authenticated": False}
+
+
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
+def signup_for_activity(
+    activity_name: str,
+    email: str,
+    authorization: str = Header(default=None),
+):
     """Sign up a student for an activity"""
+    get_logged_in_teacher(authorization)
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,7 +197,13 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
+def unregister_from_activity(
+    activity_name: str,
+    email: str,
+    authorization: str = Header(default=None),
+):
+    get_logged_in_teacher(authorization)
+
     """Unregister a student from an activity"""
     # Validate activity exists
     if activity_name not in activities:

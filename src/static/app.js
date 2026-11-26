@@ -3,6 +3,72 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
   const messageDiv = document.getElementById("message");
+  const signupContainer = document.getElementById("signup-container");
+  const userMenuButton = document.getElementById("user-menu-button");
+  const loginModal = document.getElementById("login-modal");
+  const closeLoginModal = document.getElementById("close-login-modal");
+  const loginForm = document.getElementById("login-form");
+  const loginMessage = document.getElementById("login-message");
+
+  let teacherToken = localStorage.getItem("teacherToken");
+  let teacherUsername = null;
+
+  function authHeaders(headers = {}) {
+    if (teacherToken) {
+      headers.Authorization = `Bearer ${teacherToken}`;
+    }
+    return headers;
+  }
+
+  function showMessage(text, type = "success") {
+    messageDiv.textContent = text;
+    messageDiv.className = type;
+    messageDiv.classList.remove("hidden");
+    setTimeout(() => messageDiv.classList.add("hidden"), 5000);
+  }
+
+  function updateAdminUi() {
+    const isAuthenticated = Boolean(teacherToken);
+    signupContainer.classList.toggle("hidden", !isAuthenticated);
+    userMenuButton.textContent = isAuthenticated
+      ? `👤 ${teacherUsername || "Teacher"}`
+      : "👤";
+    userMenuButton.setAttribute(
+      "aria-label",
+      isAuthenticated ? "Log out" : "Teacher login"
+    );
+  }
+
+  async function checkAuthStatus() {
+    if (!teacherToken) {
+      teacherUsername = null;
+      updateAdminUi();
+      fetchActivities();
+      return;
+    }
+
+    try {
+      const response = await fetch("/auth/status", {
+        headers: authHeaders(),
+      });
+      const status = await response.json();
+
+      if (!status.authenticated) {
+        teacherToken = null;
+        teacherUsername = null;
+        localStorage.removeItem("teacherToken");
+      } else {
+        teacherUsername = status.username;
+      }
+    } catch (error) {
+      teacherToken = null;
+      teacherUsername = null;
+      localStorage.removeItem("teacherToken");
+    }
+
+    updateAdminUi();
+    fetchActivities();
+  }
 
   // Function to fetch activities from API
   async function fetchActivities() {
@@ -12,6 +78,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Clear loading message
       activitiesList.innerHTML = "";
+      activitySelect.innerHTML =
+        '<option value="">-- Select an activity --</option>';
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
@@ -22,15 +90,19 @@ document.addEventListener("DOMContentLoaded", () => {
           details.max_participants - details.participants.length;
 
         // Create participants HTML with delete icons instead of bullet points
+        const deleteButton = (email) =>
+          teacherToken
+            ? `<button class="delete-btn" data-activity="${name}" data-email="${email}" aria-label="Unregister ${email}">❌</button>`
+            : "";
+
         const participantsHTML =
           details.participants.length > 0
             ? `<div class="participants-section">
               <h5>Participants:</h5>
               <ul class="participants-list">
                 ${details.participants
-                  .map(
-                    (email) =>
-                      `<li><span class="participant-email">${email}</span><button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button></li>`
+                  .map((email) =>
+                    `<li><span class="participant-email">${email}</span>${deleteButton(email)}</li>`
                   )
                   .join("")}
               </ul>
@@ -80,6 +152,7 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/unregister?email=${encodeURIComponent(email)}`,
         {
           method: "DELETE",
+          headers: authHeaders(),
         }
       );
 
@@ -124,6 +197,7 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/signup?email=${encodeURIComponent(email)}`,
         {
           method: "POST",
+          headers: authHeaders(),
         }
       );
 
@@ -155,6 +229,72 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  userMenuButton.addEventListener("click", async () => {
+    if (teacherToken) {
+      try {
+        await fetch("/logout", {
+          method: "POST",
+          headers: authHeaders(),
+        });
+      } finally {
+        teacherToken = null;
+        teacherUsername = null;
+        localStorage.removeItem("teacherToken");
+        updateAdminUi();
+        fetchActivities();
+      }
+      return;
+    }
+
+    loginModal.classList.remove("hidden");
+    document.getElementById("username").focus();
+  });
+
+  closeLoginModal.addEventListener("click", () => {
+    loginModal.classList.add("hidden");
+    loginMessage.classList.add("hidden");
+  });
+
+  loginModal.addEventListener("click", (event) => {
+    if (event.target === loginModal) {
+      loginModal.classList.add("hidden");
+      loginMessage.classList.add("hidden");
+    }
+  });
+
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const username = document.getElementById("username").value;
+    const password = document.getElementById("password").value;
+
+    try {
+      const response = await fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        loginMessage.textContent = result.detail || "Login failed";
+        loginMessage.classList.remove("hidden");
+        return;
+      }
+
+      teacherToken = result.token;
+      teacherUsername = result.username;
+      localStorage.setItem("teacherToken", teacherToken);
+      loginForm.reset();
+      loginModal.classList.add("hidden");
+      loginMessage.classList.add("hidden");
+      updateAdminUi();
+      fetchActivities();
+    } catch (error) {
+      loginMessage.textContent = "Unable to log in. Please try again.";
+      loginMessage.classList.remove("hidden");
+    }
+  });
+
   // Initialize app
-  fetchActivities();
+  checkAuthStatus();
 });
